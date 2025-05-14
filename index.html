@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>團子賽跑模擬 (p5.js) - 批次與縮放修正</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+  <style>
+    body {
+      margin: 10px;
+      font-family: sans-serif;
+      background: #f5f5f5;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    #canvas-container {
+      margin: auto;
+      border: 1px solid #ccc;
+    }
+    canvas {
+      image-rendering: -moz-crisp-edges;
+      image-rendering: -webkit-optimize-contrast;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    #controls {
+      margin: 10px auto;
+      width: 920px;
+      max-width: 100%;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 12px;
+      box-sizing: border-box;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+    }
+    #log-container {
+      margin: 10px auto;
+      width: 920px;
+      max-width: 100%;
+      height: 400px;
+      overflow-y: auto;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 8px;
+      font-size: 13px;
+      line-height: 1.4;
+      box-sizing: border-box;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    #controls label, #controls button {
+      margin: 0;
+      padding: 6px 12px;
+      border-radius: 5px;
+      border: 1px solid #ddd;
+      background-color: #f9f9f9;
+      cursor: pointer;
+      transition: background-color 0.2s, color 0.2s;
+    }
+    #controls button:hover {
+      background-color: #efefef;
+    }
+    #controls button:disabled {
+      background-color: #e0e0e0;
+      color: #999;
+      cursor: not-allowed;
+    }
+    #controls input[type="number"] {
+      width: 70px;
+      padding: 6px;
+      border-radius: 5px;
+      border: 1px solid #ccc;
+    }
+    #controls input[type="range"] {
+      vertical-align: middle;
+      flex-grow: 1;
+    }
+    #controls span {
+      font-size: 14px;
+      min-width: 30px;
+    }
+    .log-message {
+      padding: 2px 4px;
+      border-bottom: 1px dashed #eee;
+      color: #333;
+      word-wrap: break-word;
+    }
+    .log-message:last-child {
+      border-bottom: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="canvas-container"></div>
+
+  <div id="controls">
+    <button id="start-btn">開始賽跑</button>
+    <button id="reset-counts-btn">重置計數器</button>
+    <label>批次執行次數：<input id="batch-input" type="number" value="10" min="1"></label>
+    <button id="batch-btn">執行 N 次</button>
+    <label>模擬倍速：</label>
+    <input id="speed-input" type="range" min="1" max="100" value="1">
+    <span id="speed-display">1×</span>
+  </div>
+
+  <div id="selector-container" style="width: 920px; max-width: 100%; margin: 10px auto; background: #fff; border: 1px solid #ccc; border-radius: 8px; padding: 12px; box-sizing: border-box;">
+    <strong>選擇參賽團子：</strong>
+    <div id="char-selector" style="display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px;">
+      <label><input type="checkbox" value="1" checked> 今汐團子</label>
+      <label><input type="checkbox" value="2" checked> 長離團子</label>
+      <label><input type="checkbox" value="3" checked> 卡卡羅團子</label>
+      <label><input type="checkbox" value="4" checked> 守岸人團子</label>
+      <label><input type="checkbox" value="5" checked> 椿團子</label>
+      <label><input type="checkbox" value="6" checked> 珂萊塔團子</label>
+    </div>
+  </div>
+
+  <div id="log-container">
+  </div>
+
+  <script>
+    const NUM_CELLS = 24;
+    const FINISH_LINE_INDEX = NUM_CELLS - 1;
+    const CHAR_IDS = [1, 2, 3, 4, 5, 6];
+    const COLORS = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4'];
+    const NAMES = ["今汐團子", "長離團子", "卡卡羅團子", "守岸人團子", "椿團子", "珂萊塔團子"];
+    const ICONS = { 1: "今", 2: "長", 3: "卡", 4: "守", 5: "椿", 6: "珂" };
+
+    let cellW;
+    let stacks, positions, counters, moveQueue;
+    let raceRunning = false;
+    let baseDelay = 1000;
+    let stepDelay = baseDelay;
+    let lastMoveTime = 0;
+
+    let batchRunning = false;
+    let batchRemaining = 0;
+    let batchTotal = 0;
+
+    let logContainerElement;
+    let startBtn, resetCountsBtn, batchInput, batchBtn, speedInput, speedDisplay;
+    let activeCharIds = [];
+    let firstRound;
+
+    function setup() {
+      pixelDensity(displayDensity());
+      const cnv = createCanvas(920, 300);
+      cnv.parent('canvas-container');
+      cellW = (width - 200) / NUM_CELLS;
+
+      logContainerElement = document.getElementById('log-container');
+      startBtn = document.getElementById('start-btn');
+      resetCountsBtn = document.getElementById('reset-counts-btn');
+      batchInput = document.getElementById('batch-input');
+      batchBtn = document.getElementById('batch-btn');
+      speedInput = document.getElementById('speed-input');
+      speedDisplay = document.getElementById('speed-display');
+
+      if (logContainerElement) {
+        console.log("Log container in setup: FOUND");
+      } else {
+        console.error("Log container #log-container NOT FOUND during setup!");
+      }
+
+      initCounters();
+      initRace();
+
+      startBtn.onclick = () => { if (!raceRunning && !batchRunning) startSingleRace(); };
+      resetCountsBtn.onclick = () => {
+        if (!raceRunning && !batchRunning) {
+          initCounters();
+          logMessage('已重置所有勝利計數。');
+          redraw();
+        } else {
+          logMessage('賽跑或批次模擬進行中，無法重置計數器。');
+        }
+      };
+      batchBtn.onclick = runBatch; // This will use the later definition of runBatch
+      speedInput.oninput = () => {
+        const sp = parseInt(speedInput.value);
+        speedDisplay.textContent = sp + '×';
+        stepDelay = baseDelay / sp;
+      };
+
+      logMessage("模擬器已準備就緒。");
+      noLoop();
+      redraw();
+    }
+
+    function draw() {
+      background(240);
+      drawTrack();
+      drawTokens();
+      drawCounters();
+
+      if (raceRunning && millis() - lastMoveTime >= stepDelay) {
+        lastMoveTime = millis();
+        processNextMove();
+      }
+    }
+
+    function initRace() {
+      stacks = Array.from({ length: NUM_CELLS }, () => []);
+      positions = {};
+      activeCharIds = getSelectedCharIds();
+
+      if (activeCharIds.length === 0) {
+        alert("請至少選擇一個參賽團子！");
+        enableButtons();
+        raceRunning = false;
+        batchRunning = false;
+        if (isLooping()) noLoop();
+        return;
+      }
+
+      stacks[0] = [];
+      activeCharIds.forEach(id => {
+        positions[id] = 0;
+      });
+
+      firstRound = true;
+      moveQueue = [];
+    }
+
+    function initCounters() {
+      counters = CHAR_IDS.map(_ => 0); // 繼續維持原始順序
+    }
+
+    function enableButtons() {
+      startBtn.disabled = false;
+      batchBtn.disabled = false;
+      resetCountsBtn.disabled = false;
+    }
+
+    function disableButtons() {
+      startBtn.disabled = true;
+      batchBtn.disabled = true;
+      resetCountsBtn.disabled = true;
+    }
+
+    function getSelectedCharIds() {
+      const checkboxes = document.querySelectorAll('#char-selector input[type="checkbox"]');
+      return Array.from(checkboxes)
+        .filter(cb => cb.checked)
+        .map(cb => parseInt(cb.value));
+    }
+
+    function startSingleRace() {
+      if (raceRunning || batchRunning) return;
+      activeCharIds = getSelectedCharIds();
+      if (activeCharIds.length === 0) {
+        alert("請至少選擇一個參賽團子才能開始賽跑！");
+        return;
+      }
+
+      clearLog();
+      logMessage("開始新賽跑...");
+      disableButtons();
+      raceRunning = true;
+      batchRunning = false;
+
+      initRace();
+      buildMoveQueue();
+
+      const sp = parseInt(speedInput.value);
+      stepDelay = baseDelay / sp;
+      lastMoveTime = millis() - stepDelay;
+
+      if (!isLooping()) loop();
+    }
+
+    // The first definition of startBatchRace was here and has been removed.
+    // The first definition of runBatch was here and has been removed.
+
+    function startBatchRace() { // This is the effective definition
+      activeCharIds = getSelectedCharIds();
+      if (activeCharIds.length === 0) {
+        alert("請至少選擇一個參賽團子才能開始批次賽跑！");
+        batchRunning = false;
+        enableButtons();
+        return;
+      }
+
+      logMessage(`開始批次賽跑 (此場後還剩 ${batchRemaining} 場)`);
+      raceRunning = true;
+
+      initRace();
+      buildMoveQueue();
+
+      const sp = parseInt(speedInput.value);
+      stepDelay = baseDelay / sp;
+      lastMoveTime = millis() - stepDelay;
+
+      if (!isLooping()) loop();
+    }
+
+    function buildMoveQueue() {
+      let order = shuffle(activeCharIds.slice());
+      const id2 = 2; // 長離團子 ID
+      if (activeCharIds.includes(id2)) {
+        const changliPos = positions[id2];
+        if (changliPos !== undefined && stacks[changliPos]) {
+          const currentStack = stacks[changliPos];
+          const changliIndexInStack = currentStack.indexOf(id2);
+          // 規則2: 長離在疊層中且非最頂層時，65%機率最後行動
+          if (changliIndexInStack > 0 && random() < 0.65) {
+            order = order.filter(x => x !== id2);
+            order.push(id2);
+            logMessage(`${NAMES[id2 - 1]} 特殊技能(規則2): 此回合機率性最後行動`);
+          }
+        }
+      }
+      moveQueue = order;
+
+      if (firstRound) {
+        // 初始團子在起點的堆疊順序，與行動順序一致 (後動者在疊層上方)
+        stacks[0] = order.slice().reverse();
+        firstRound = false;
+      }
+      logMessage(`回合行動順序: ${moveQueue.map(id => NAMES[id - 1]).join(' → ')}`);
+    }
+
+
+    function handleRaceWin(winnerId) {
+      counters[winnerId - 1]++;
+      const winnerName = NAMES[winnerId - 1];
+      logMessage(`${winnerName} 勝利！ (到達終點格 ${FINISH_LINE_INDEX})`);
+      raceRunning = false;
+      redraw();
+
+      setTimeout(() => {
+        if (batchRunning) {
+          if (batchRemaining > 0) {
+            batchRemaining--;
+            startBatchRace();
+          } else {
+            logMessage(`批次完成，共模擬 ${batchTotal} 場。`);
+            alert(`所有 ${batchTotal} 場批次模擬完成！`);
+            batchRunning = false;
+            enableButtons();
+            if (isLooping()) noLoop();
+          }
+        } else {
+          alert(`${winnerName} 贏了！`);
+          enableButtons();
+          if (isLooping()) noLoop();
+        }
+      }, 100); // 短暫延遲以便觀察最終畫面
+    }
+
+    function processNextMove() {
+      if (!raceRunning) return;
+
+      if (moveQueue.length > 0) {
+        const idToMove = moveQueue.shift();
+        performMove(idToMove);
+
+        // 檢查是否有角色到達終點
+        for (const charId of activeCharIds) {
+          if (positions[charId] === FINISH_LINE_INDEX) {
+            const finishStack = stacks[FINISH_LINE_INDEX];
+            if (finishStack.length > 0) {
+              // 終點格最上方的團子為實際勝利者
+              const actualWinnerId = finishStack[finishStack.length - 1];
+              if (raceRunning) { // 再次檢查 raceRunning 狀態，避免重複觸發
+                handleRaceWin(actualWinnerId);
+              }
+              return; // 賽跑結束
+            }
+          }
+        }
+
+        if (raceRunning) redraw(); // 如果賽跑仍在進行，則重繪
+        return;
+      }
+
+      // 當前回合所有角色行動完畢
+      logMessage("回合結束，建立新行動順序。");
+      buildMoveQueue();
+    }
+
+
+    function performMove(id) {
+      const name = NAMES[id - 1];
+      const actions = [];
+      let currentCellIdx = positions[id];
+
+      // 防呆：檢查角色位置和對應的格子是否存在
+      if (currentCellIdx === undefined || !stacks[currentCellIdx]) {
+        logMessage(`錯誤: ${name} 位置 (${currentCellIdx}) 無效! 跳過行動。`);
+        return;
+      }
+      let currentStack = stacks[currentCellIdx];
+      let charIdxInStack = currentStack.indexOf(id);
+
+      // 防呆：檢查角色是否在當前格子的堆疊中
+      if (charIdxInStack === -1) {
+        logMessage(`錯誤: ${name} 在位置 ${currentCellIdx} 的堆疊中未找到! 跳過行動。`);
+        return;
+      }
+
+      // 技能1 (今汐): 40% 機率移動到當前格子的最頂部 (如果不在最頂部)
+      if (id === 1 && charIdxInStack < currentStack.length - 1 && random() < 0.40) {
+        currentStack.splice(charIdxInStack, 1); // 從原位置移除
+        currentStack.push(id); // 加到頂部
+        charIdxInStack = currentStack.length - 1; // 更新在堆疊中的索引
+        actions.push('技能1(今汐): 移至當前格頂部');
+      }
+
+      // 擲骰: 守岸人 (ID 4) 50%機率2步，50%機率3步。其他角色1-3步
+      let roll = (id === 4 ? (random() < 0.5 ? 2 : 3) : floor(random(1, 4)));
+      actions.push(`擲骰${roll}`);
+
+      // 技能6 (珂萊塔): 28% 機率雙倍移動
+      if (id === 6 && random() < 0.28) {
+        roll *= 2;
+        actions.push('技能6(珂萊塔): 雙倍移動');
+      }
+
+      // 技能3 (卡卡羅): 若為最後一名，額外移動3格
+      if (id === 3 && isLastPlace(id)) {
+        roll += 3;
+        actions.push('技能3(卡卡羅): 最後名額外+3');
+      }
+
+      // 技能5 (椿): 50% 機率觸發
+      let carryGroup = true; // 預設帶走上方所有團子
+      if (id === 5 && random() < 0.50) {
+        // 計算椿所在格子中，"其他"團子的數量 (不包含椿自己)
+        const othersInStackCount = currentStack.length - (charIdxInStack + 1); // 椿上方的團子
+        const actualOthersInStackCount = currentStack.length - 1; // 格內總其他團子數
+
+        if (actualOthersInStackCount > 0) { // 只要格內有其他團子
+             roll += actualOthersInStackCount;
+             actions.push(`技能5(椿): 格內每有1其他團子+1 (共+${actualOthersInStackCount})`);
+        }
+        carryGroup = false; // 椿單獨行動
+        // 確保 "單獨行動" 的日誌只出現一次或附加到現有技能日誌
+        if (!actions.some(a => a.includes("技能5(椿):"))) {
+            actions.push('技能5(椿): 單獨行動');
+        } else { // 如果已經有 "格內每有..." 的日誌
+            const lastActionIdx = actions.findIndex(a => a.startsWith('技能5(椿): 格內每有1其他團子+1'));
+            if (lastActionIdx !== -1) actions[lastActionIdx] += ' 並單獨行動';
+            else actions.push('技能5(椿): 單獨行動'); // 以防萬一
+        }
+      }
+
+      // 決定要移動的團子組 (椿單獨移動或帶走上方)
+      let groupToMove = carryGroup
+        ? currentStack.splice(charIdxInStack) // 帶走從自己開始到頂部的所有團子
+        : [currentStack.splice(charIdxInStack, 1)[0]]; // 只帶走自己
+
+      const fromCell = currentCellIdx;
+      const toCell = min(currentCellIdx + roll, FINISH_LINE_INDEX); // 移動不能超過終點
+
+      // 移動團子到目標格子
+      groupToMove.forEach(charIdInGroup => {
+        stacks[toCell].push(charIdInGroup);
+        positions[charIdInGroup] = toCell;
+      });
+
+
+      // 今汐特殊技能：當其他角色移動導致今汐所在格發生變化，且今汐不在頂部時，40%機率移至頂部
+      const JINXI_ID = 1;
+      const JINXI_SKILL_CHANCE = 0.40; // 與主動技能機率相同
+
+      // 檢查今汐是否在活躍角色中，並且是否在目標格子中
+      if (activeCharIds.includes(JINXI_ID) && stacks[toCell].includes(JINXI_ID)) {
+          const jinxiIdxInLandingStack = stacks[toCell].indexOf(JINXI_ID);
+          // 如果今汐在目標格，且不在最頂部 (即上方還有其他團子)
+          if (jinxiIdxInLandingStack !== -1 && jinxiIdxInLandingStack < stacks[toCell].length - 1) {
+              if (random() < JINXI_SKILL_CHANCE) {
+                  stacks[toCell].splice(jinxiIdxInLandingStack, 1); // 從原位置移除
+                  stacks[toCell].push(JINXI_ID);                   // 加到頂部
+                  // 提供更清晰的日誌，說明是哪個角色移動觸發的
+                  logMessage(`${NAMES[JINXI_ID-1]} 特殊技能 : 因 ${name} 等角色移至格 ${toCell+1}，${NAMES[JINXI_ID-1]} 再次移至頂部`);
+              }
+          }
+      }
+
+
+      actions.push(`移動 ${fromCell + 1} → ${toCell + 1}`); // 格子編號從1開始顯示
+      logMessage(`${name}：${actions.join('，')}`);
+    }
+
+    function isLastPlace(charIdToCheck) {
+      // 如果該角色未參賽，則不是最後一名
+      if (!activeCharIds.includes(charIdToCheck)) {
+        return false;
+      }
+
+      let minPos = FINISH_LINE_INDEX + 1; // 初始化為一個不可能的位置
+
+      // 找到所有活躍角色中的最小位置
+      activeCharIds.forEach(id => {
+        if (positions[id] < minPos) {
+          minPos = positions[id];
+        }
+      });
+
+      // 找出所有處於最小位置的角色
+      const candidatesAtMinPos = activeCharIds.filter(id => positions[id] === minPos);
+
+      if (candidatesAtMinPos.length === 0) {
+        return false; // 理論上不應發生，除非 activeCharIds 為空
+      }
+
+      // 如果要檢查的角色不在這些候選者中，則肯定不是最後一名
+      if (!candidatesAtMinPos.includes(charIdToCheck)) {
+        return false;
+      }
+
+      // 如果只有一個角色在最小位置，且就是我們要檢查的角色，那它就是最後一名
+      if (candidatesAtMinPos.length === 1 && candidatesAtMinPos[0] === charIdToCheck) {
+        return true;
+      }
+
+      // 如果有多個角色並列在最小位置，需要檢查堆疊順序
+      const stackAtMinCell = stacks[minPos];
+      if (!stackAtMinCell || stackAtMinCell.length === 0) {
+        return false; // 理論上不應發生，因為這些角色應該在堆疊中
+      }
+
+      // 遍歷最小位置格子的堆疊，第一個遇到的候選角色就是實際上的最後一名
+      for (let i = 0; i < stackAtMinCell.length; i++) {
+        const idInStack = stackAtMinCell[i];
+        if (candidatesAtMinPos.includes(idInStack)) {
+          return idInStack === charIdToCheck; // 如果棧底的是我們要檢查的角色，則它是最後
+        }
+      }
+      
+      return false; // 理論上不應執行到這裡
+    }
+
+    function runBatch() { // This is the effective definition
+      if (raceRunning || batchRunning) {
+        alert("賽跑或批次模擬正在進行中！");
+        return;
+      }
+
+      const currentSelectedChars = getSelectedCharIds();
+      if (currentSelectedChars.length === 0) {
+        alert("請至少選擇一個參賽團子才能執行批次模擬！");
+        return;
+      }
+
+      const n = parseInt(batchInput.value);
+      if (isNaN(n) || n < 1) {
+        alert('請輸入有效的批次執行次數（正整數）。');
+        return;
+      }
+
+      clearLog();
+      logMessage(`準備開始批次模擬 ${n} 場...`);
+
+      batchTotal = n;
+      batchRemaining = n - 1; // 因為第一場馬上開始
+      batchRunning = true;
+
+      disableButtons();
+      startBatchRace(); // 調用上面唯一的 startBatchRace
+    }
+
+    function drawTrack() {
+      for (let i = 0; i < NUM_CELLS; i++) {
+        const x = i * cellW, y = 50, h = height - 100;
+        fill(i % 2 ? 250 : 220); // 交替顏色
+        stroke(180);
+        rect(x, y, cellW, h);
+        noStroke();
+        fill(50);
+        textSize(11);
+        textAlign(CENTER, CENTER);
+        text(i + 1, x + cellW / 2, y + 15); // 格子編號
+      }
+    }
+
+    function drawTokens() {
+      const tokenSize = min(cellW * 0.65, 28); // 棋子大小，根據格子寬度和最大值調整
+      const stackOffset = tokenSize * 0.7; // 堆疊時的垂直偏移
+
+      for (let i = 0; i < NUM_CELLS; i++) {
+        if (stacks[i]) { // 確保 stacks[i] 已定義
+          stacks[i].forEach((id, j) => {
+            fill(COLORS[id - 1]);
+            noStroke();
+            const x = i * cellW + cellW / 2; // 格子中心X
+            const yBase = height - 40 - (tokenSize / 2) ; // 底部基準線，考慮了 tokenSize 的一半
+            const y = yBase - j * stackOffset; // 根據在堆疊中的位置調整Y (j=0在最底)
+            ellipse(x, y, tokenSize);
+
+            // 根據背景色調整文字顏色以提高可讀性
+            if (id === 3 || id === 4 || id === 1) { // 黃色、藍色、紅色背景用黑色字
+              fill(0);
+            } else { // 其他用白色字
+              fill(255);
+            }
+            textAlign(CENTER, CENTER);
+            textSize(max(tokenSize * 0.45, 9)); // 文字大小隨棋子大小調整，有最小值
+            text(ICONS[id], x, y + 1); // 顯示圖標，微調y使文字居中
+          });
+        }
+      }
+    }
+
+    function drawCounters() {
+      const x0 = NUM_CELLS * cellW + 30; // 計數器區域起始X
+      const y0 = 60;                    // 計數器區域起始Y
+      const itemHeight = 28;            // 每項高度
+      const iconSize = 20;              // 圖標大小
+
+      textSize(15);
+      textAlign(LEFT, TOP);
+      fill(0);
+      text('勝利計數:', x0, y0 - 30);
+
+      activeCharIds.forEach((id, i) => { // 只顯示已選擇參賽的團子計數
+        const currentY = y0 + i * itemHeight;
+        fill(COLORS[id - 1]);
+        ellipse(x0 + iconSize / 2, currentY + iconSize / 2, iconSize, iconSize); // 顏色圖標
+        fill(0);
+        textSize(14);
+        textAlign(LEFT, CENTER);
+        text(`${NAMES[id - 1]}: ${counters[id - 1]}`, x0 + iconSize + 12, currentY + iconSize / 2);
+      });
+    }
+
+    function clearLog() {
+      if (logContainerElement) {
+        logContainerElement.innerHTML = '';
+      } else {
+        console.warn("clearLog: logContainerElement not found.");
+      }
+    }
+
+    function logMessage(msg) {
+      console.log(`[遊戲日誌] ${msg}`);
+      if (!logContainerElement) {
+        console.error("logMessage: logContainerElement DOM element not found. Message:", msg);
+        return;
+      }
+      const div = document.createElement('div');
+      div.className = 'log-message';
+      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      div.textContent = `[${timestamp}] ${msg}`;
+      logContainerElement.appendChild(div);
+      logContainerElement.scrollTop = logContainerElement.scrollHeight; // 自動滾動到底部
+    }
+  </script>
+</body>
+</html>
